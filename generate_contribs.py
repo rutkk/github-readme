@@ -220,47 +220,17 @@ def cube_faces_svg(gx: int, gy: int, level: int, top_color: str) -> str:
 
 
 def render_top_right_stats(x: float, y: float, palette_name: str, stats: Stats) -> str:
-    palette = PALETTES[palette_name]
     text = TEXT_COLORS[palette_name]
-    parts = []
-
-    parts.append(
-        f'<text x="{x:.2f}" y="{y:.2f}" text-anchor="end" '
-        f'font-family=\'{FONT_STACK}\' font-size="38" font-weight="700" fill="{text["accent"]}">'
-        f"{stats.total_contributions:,}</text>"
+    return "\n".join(
+        [
+            f'<text x="{x:.2f}" y="{y:.2f}" text-anchor="end" '
+            f'font-family=\'{FONT_STACK}\' font-size="38" font-weight="700" fill="{text["accent"]}">'
+            f"{stats.total_commits:,}</text>",
+            f'<text x="{x:.2f}" y="{y + 14:.2f}" text-anchor="end" '
+            f'font-family=\'{FONT_STACK}\' font-size="10" fill="{text["secondary"]}" letter-spacing="0.8">'
+            f"TOTAL COMMITS</text>",
+        ]
     )
-    parts.append(
-        f'<text x="{x:.2f}" y="{y + 14:.2f}" text-anchor="end" '
-        f'font-family=\'{FONT_STACK}\' font-size="10" fill="{text["secondary"]}" letter-spacing="0.8">'
-        f"CONTRIBUTIONS THIS YEAR</text>"
-    )
-
-    lang_y = y + 40
-    parts.append(
-        f'<text x="{x:.2f}" y="{lang_y:.2f}" text-anchor="end" '
-        f'font-family=\'{FONT_STACK}\' font-size="10" fill="{text["secondary"]}" letter-spacing="0.8">'
-        f"TOP LANGUAGES</text>"
-    )
-
-    bar_max_width = 110
-    bar_height = 6
-    row_spacing = 16
-    for idx, (language, fraction) in enumerate(stats.top_languages):
-        row_y = lang_y + 14 + idx * row_spacing
-        bar_width = bar_max_width * fraction
-        bar_x = x - bar_width
-        color_index = 3 - min(idx, 3)
-        bar_color = palette["levels"][color_index]
-        parts.append(
-            f'<rect x="{bar_x:.2f}" y="{row_y - bar_height:.2f}" '
-            f'width="{bar_width:.2f}" height="{bar_height}" rx="1" fill="{bar_color}"/>'
-        )
-        parts.append(
-            f'<text x="{bar_x - 6:.2f}" y="{row_y - 0.5:.2f}" text-anchor="end" '
-            f'font-family=\'{FONT_STACK}\' font-size="11" fill="{text["primary"]}">{language}</text>'
-        )
-
-    return "\n".join(parts)
 
 
 def render_bottom_left_stats(x: float, y: float, palette_name: str, stats: Stats) -> str:
@@ -268,18 +238,7 @@ def render_bottom_left_stats(x: float, y: float, palette_name: str, stats: Stats
     text = TEXT_COLORS[palette_name]
     parts = []
 
-    parts.append(
-        f'<text x="{x:.2f}" y="{y - 16:.2f}" '
-        f'font-family=\'{FONT_STACK}\' font-size="32" font-weight="700" fill="{text["accent"]}">'
-        f"{stats.total_commits:,}</text>"
-    )
-    parts.append(
-        f'<text x="{x:.2f}" y="{y - 2:.2f}" '
-        f'font-family=\'{FONT_STACK}\' font-size="10" fill="{text["secondary"]}" letter-spacing="0.8">'
-        f"TOTAL COMMITS</text>"
-    )
-
-    chart_x = x + 150
+    chart_x = x
     chart_y = y
     chart_height = 50
     bar_width = 10
@@ -335,19 +294,27 @@ def render_svg(cells: list[Cell], palette_name: str, stats: Stats, weeks: int) -
 
     pad = 8
     extra_top = 24
-    extra_bottom = 24
-    extra_left = 16
-    extra_right = 16
+    extra_left = 20
+
+    # Reserve dedicated layout space so the two stat blocks never sit on top
+    # of the isometric graph when the SVG is shown at larger sizes.
+    stat_right_gutter = 220
+    stat_bottom_gutter = 108
+
+    extra_right = stat_right_gutter
+    extra_bottom = stat_bottom_gutter
 
     min_x = graph_min_x - pad - extra_left
     min_y = graph_min_y - pad - extra_top
     width = (graph_max_x - graph_min_x) + 2 * pad + extra_left + extra_right
     height = (graph_max_y - graph_min_y) + 2 * pad + extra_top + extra_bottom
 
-    tr_anchor_x = graph_max_x - 4
-    tr_anchor_y = graph_min_y + 28
-    bl_bottom = graph_max_y - 4
-    bl_left = graph_min_x + 4
+    right_edge = graph_max_x + pad + extra_right
+    tr_anchor_x = right_edge - 18
+    tr_anchor_y = graph_min_y + 36
+
+    bl_left = graph_min_x + 8
+    bl_bottom = graph_max_y + 84
 
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{min_x:.2f} {min_y:.2f} {width:.2f} {height:.2f}" '
