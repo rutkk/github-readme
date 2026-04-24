@@ -43,7 +43,8 @@ ANGLE_DEG = 20
 GAP = 2
 SHADE_LEFT = 0.88
 SHADE_RIGHT = 0.74
-HEIGHT_SCHEME = [0, 4, 8, 12, 16]
+BASE_COMMIT_HEIGHT = 8
+MAX_COMMIT_HEIGHT = 18
 
 LEVEL_MAP = {
     "NONE": 0,
@@ -68,7 +69,27 @@ TEXT_COLORS = {
 
 FONT_STACK = '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif'
 
-YEAR_QUERY = """
+LAST_YEAR_QUERY = """
+query($login: String!) {
+  user(login: $login) {
+    contributionsCollection {
+      totalCommitContributions
+      contributionCalendar {
+        totalContributions
+        weeks {
+          contributionDays {
+            contributionCount
+            contributionLevel
+            date
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+RANGE_QUERY = """
 query($login: String!, $from: DateTime!, $to: DateTime!) {
   user(login: $login) {
     contributionsCollection(from: $from, to: $to) {
@@ -132,14 +153,12 @@ class Cell:
 class Stats:
     total_contributions: int
     top_languages: list[tuple[str, float]]
-    total_commits: int
     day_of_week_totals: list[int]
 
 
 MOCK_STATS = Stats(
     total_contributions=1247,
     top_languages=[("TypeScript", 0.42), ("Python", 0.28), ("Rust", 0.18), ("Go", 0.12)],
-    total_commits=892,
     day_of_week_totals=[48, 231, 268, 245, 252, 178, 25],
 )
 
@@ -229,8 +248,16 @@ def cube_faces_svg(gx: int, gy: int, height: int, top_color: str) -> str:
     return "\n".join(polys)
 
 
-def height_from_level(level: int) -> int:
-    return HEIGHT_SCHEME[level]
+def height_from_count(count: int) -> int:
+    if count <= 0:
+        return 0
+    if count == 1:
+        return BASE_COMMIT_HEIGHT
+
+    # One commit should feel meaningful; extra commits add height with
+    # diminishing returns instead of forming a strict linear tower.
+    extra = math.log2(count) * 3
+    return min(MAX_COMMIT_HEIGHT, int(round(BASE_COMMIT_HEIGHT + extra)))
 
 
 def render_top_right_stats(x: float, y: float, palette_name: str, stats: Stats) -> str:
@@ -243,10 +270,10 @@ def render_top_right_stats(x: float, y: float, palette_name: str, stats: Stats) 
         [
             f'<text x="{x:.2f}" y="{number_y:.2f}" text-anchor="end" '
             f'font-family=\'{FONT_STACK}\' font-size="{number_size}" font-weight="700" fill="{text["accent"]}">'
-            f"{stats.total_commits:,}</text>",
+            f"{stats.total_contributions:,}</text>",
             f'<text x="{x:.2f}" y="{label_y:.2f}" text-anchor="end" '
             f'font-family=\'{FONT_STACK}\' font-size="{label_size}" fill="{text["secondary"]}" letter-spacing="0.8">'
-            f"TOTAL COMMITS</text>",
+            f"TOTAL CONTRIBUTIONS</text>",
         ]
     )
 
@@ -305,7 +332,7 @@ def render_svg(cells: list[Cell], palette_name: str, stats: Stats, weeks: int) -
     palette = PALETTES[palette_name]
     sorted_cells = sorted(cells, key=lambda cell: (cell.week + cell.day, cell.level))
 
-    max_height = max(HEIGHT_SCHEME)
+    max_height = max((height_from_count(cell.count) for cell in cells), default=0)
     step = CELL + GAP
     corners = [
         project(0, 0, 0),
@@ -327,7 +354,7 @@ def render_svg(cells: list[Cell], palette_name: str, stats: Stats, weeks: int) -
     extra_top = 3
     extra_left = 3
     extra_right = 3
-    extra_bottom = 32
+    extra_bottom = 40
 
     min_x = graph_min_x - pad - extra_left
     min_y = graph_min_y - pad - extra_top
@@ -338,7 +365,7 @@ def render_svg(cells: list[Cell], palette_name: str, stats: Stats, weeks: int) -
     tr_anchor_y = graph_min_y
 
     bl_left = graph_min_x
-    bl_bottom = graph_max_y - 18
+    bl_bottom = graph_max_y - 30
 
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{min_x:.2f} {min_y:.2f} {width:.2f} {height:.2f}" '
@@ -347,7 +374,7 @@ def render_svg(cells: list[Cell], palette_name: str, stats: Stats, weeks: int) -
 
     for cell in sorted_cells:
         color = palette["empty"] if cell.level == 0 else palette["levels"][cell.level - 1]
-        parts.append(cube_faces_svg(cell.week, cell.day, height_from_level(cell.level), color))
+        parts.append(cube_faces_svg(cell.week, cell.day, height_from_count(cell.count), color))
 
     parts.append(render_top_right_stats(tr_anchor_x, tr_anchor_y, palette_name, stats))
     parts.append(render_bottom_left_stats(bl_left, bl_bottom, palette_name, stats))
@@ -392,13 +419,21 @@ def github_graphql(token: str, query: str, variables: dict[str, object]) -> dict
 def fetch_range_payload(token: str, login: str, start: date, end: date) -> dict[str, object]:
     data = github_graphql(
         token,
-        YEAR_QUERY,
+        RANGE_QUERY,
         {
             "login": login,
             "from": build_iso_datetime(start),
             "to": build_iso_datetime(end, end_of_day=True),
         },
     )
+    user = data.get("user")
+    if not user:
+        raise RuntimeError(f"User '{login}' was not found.")
+    return user["contributionsCollection"]
+
+
+def fetch_last_year_payload(token: str, login: str) -> dict[str, object]:
+    data = github_graphql(token, LAST_YEAR_QUERY, {"login": login})
     user = data.get("user")
     if not user:
         raise RuntimeError(f"User '{login}' was not found.")
@@ -435,14 +470,14 @@ def build_cells_and_days(weeks: list[dict[str, object]]) -> tuple[list[Cell], li
     day_totals = [0, 0, 0, 0, 0, 0, 0]
 
     for week_index, week in enumerate(weeks):
-        for day in week["contributionDays"]:
+        # GitHub already returns the days in display order for each week.
+        # Preserve that order directly instead of re-deriving weekdays.
+        for day_index, day in enumerate(week["contributionDays"]):
             level = LEVEL_MAP[day["contributionLevel"]]
             count = day["contributionCount"]
-            contributed_on = date.fromisoformat(day["date"])
-            sunday_first_index = 0 if contributed_on.weekday() == 6 else contributed_on.weekday() + 1
 
-            cells.append(Cell(week=week_index, day=sunday_first_index, level=level, count=count))
-            day_totals[sunday_first_index] += count
+            cells.append(Cell(week=week_index, day=day_index, level=level, count=count))
+            day_totals[day_index] += count
 
     return cells, day_totals
 
@@ -457,22 +492,7 @@ def normalize_languages(totals: Counter[str], top_n: int = 4) -> list[tuple[str,
 
 
 def fetch_live_data(token: str, login: str) -> tuple[list[Cell], Stats, int]:
-    today = date.today()
-    # GitHub validates contribution windows strictly; keeping the range a
-    # little under a full year avoids occasional off-by-one rejections.
-    rolling_start = today - timedelta(days=363)
-
-    current_payload = fetch_range_payload(token, login, rolling_start, today)
-    contribution_years = current_payload["contributionYears"]
-    total_commits = 0
-
-    for year in contribution_years:
-        year_start = max(date(year, 1, 1), rolling_start)
-        year_end = min(date(year, 12, 31), today)
-        if year_start > year_end:
-            continue
-        year_payload = fetch_range_payload(token, login, year_start, year_end)
-        total_commits += year_payload["totalCommitContributions"]
+    current_payload = fetch_last_year_payload(token, login)
 
     weeks = current_payload["contributionCalendar"]["weeks"]
     cells, day_totals = build_cells_and_days(weeks)
@@ -481,7 +501,6 @@ def fetch_live_data(token: str, login: str) -> tuple[list[Cell], Stats, int]:
     stats = Stats(
         total_contributions=current_payload["contributionCalendar"]["totalContributions"],
         top_languages=normalize_languages(language_totals),
-        total_commits=total_commits,
         day_of_week_totals=day_totals,
     )
     return cells, stats, len(weeks)
